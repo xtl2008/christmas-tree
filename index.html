@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Merry Christmas</title>
 <link rel="preconnect" href="https://miaoda.feishu.cn" crossorigin>
-<link rel="stylesheet" href="https://miaoda.feishu.cn/fonts/css2?family=Great+Vibes&display=swap">
+<link rel="stylesheet" href="https://miaoda.feishu.cn/fonts/css2?family=Great+Vibes&family=Noto+Serif+SC:wght@600&display=swap">
 <style>
   html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
   #stage { position: fixed; inset: 0; background: #000; isolation: isolate; overflow: hidden; }
@@ -38,9 +38,10 @@
 /* ===================== 可调配置 ===================== */
 const CONFIG = {
   title: 'Merry Christmas',
-  subtitle: '2026',          // ← 换成你的名字 / 想显示的文字（中文也可）
-  spin: 0.27,                // 自动旋转速度，弧度/秒；设为 0 则不转
-  intensity: 1.0             // 粒子亮度
+  name: '张泽涵 · 圣诞节快乐',   // 中文祝福语，可自行修改
+  subtitle: '2026',              // 年份，留空则不显示
+  spin: 0.27,                    // 自动旋转速度，弧度/秒；设为 0 则不转
+  intensity: 1.0                 // 粒子亮度
 };
 
 // 可选调试参数：?spin=0 冻结旋转，?angle=0 指定初始角度
@@ -391,12 +392,14 @@ function drawSnow() {
 
 /* ===================== 文字 ===================== */
 const FONT_STACK = '"Great Vibes", "Monotype Corsiva", "Segoe Script", "Brush Script MT", cursive';
+const CN_FONT = '"Noto Serif SC", "Songti SC", "STSong", "SimSun", serif';
 
 function drawText() {
   const titleSize = portrait
     ? Math.min(Math.max(H * 0.042, 24), W * 0.082)
     : Math.min(H * 0.05, W * 0.05);
-  const subSize = titleSize * 0.78;
+  const nameSize = Math.max(titleSize * 0.56, 16);
+  const subSize = Math.max(titleSize * 0.5, 14);
   const x = Math.max(W * 0.028, 16);
   const y = portrait ? Math.max(H * 0.145, titleSize * 1.2) : H / 3;
 
@@ -407,11 +410,25 @@ function drawText() {
   snowCtx.shadowBlur = titleSize * 0.55;
   snowCtx.fillStyle = '#ffffff';
 
+  // 英文主标题
   snowCtx.font = `${titleSize}px ${FONT_STACK}`;
   snowCtx.fillText(CONFIG.title, x, y);
 
-  snowCtx.font = `${subSize}px ${FONT_STACK}`;
-  snowCtx.fillText(CONFIG.subtitle, x, y + titleSize * 0.95);
+  // 中文祝福
+  let nextY = y;
+  if (CONFIG.name) {
+    nextY = y + titleSize * 0.8;
+    snowCtx.letterSpacing = '0.06em';
+    snowCtx.font = `600 ${nameSize}px ${CN_FONT}`;
+    snowCtx.fillText(CONFIG.name, x, nextY);
+    snowCtx.letterSpacing = '0em';
+  }
+
+  // 年份
+  if (CONFIG.subtitle) {
+    snowCtx.font = `${subSize}px ${FONT_STACK}`;
+    snowCtx.fillText(CONFIG.subtitle, x, nextY + nameSize * 1.55);
+  }
   snowCtx.restore();
 }
 
