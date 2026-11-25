@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Merry Christmas</title>
+<link rel="preconnect" href="https://miaoda.feishu.cn" crossorigin>
+<link rel="stylesheet" href="https://miaoda.feishu.cn/fonts/css2?family=Great+Vibes&family=Noto+Serif+SC:wght@600&display=swap">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+  #stage { position: fixed; inset: 0; background: #000; isolation: isolate; overflow: hidden; }
+  /* WebGL 主画面 */
+  #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  /* 廉价泛光：低分辨率拷贝 + 屏幕混合 */
+  #bloom {
+    position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+    mix-blend-mode: screen; opacity: .24;
+    filter: blur(8px) saturate(130%);
+    transform: scale(1.04); transform-origin: 50% 50%;
+  }
+  /* 2D 前景：雪花 + 文字 */
+  #overlay { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+  #fallback {
+    position: absolute; inset: 0; display: none; place-items: center;
+    color: #cfd8ff; font: 16px/1.6 system-ui, -apple-system, "PingFang SC", sans-serif; text-align: center;
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="gl"></canvas>
+  <canvas id="bloom"></canvas>
+  <canvas id="overlay"></canvas>
+  <div id="fallback">当前浏览器不支持 WebGL，无法渲染 3D 圣诞树。</div>
+</div>
+
+<script>
+/* ===================== 可调配置 ===================== */
+const CONFIG = {
+  title: 'Merry Christmas',
+  name: '孟婷 · 圣诞节快乐',   // 中文祝福语，可自行修改
+  subtitle: '2026',              // 年份，留空则不显示
+  spin: 0.27,                    // 自动旋转速度，弧度/秒；设为 0 则不转
+  intensity: 1.0                 // 粒子亮度
+};
+
+// 可选调试参数：?spin=0 冻结旋转，?angle=0 指定初始角度
+const qs = new URLSearchParams(location.search);
+if (qs.has('spin')) CONFIG.spin = parseFloat(qs.get('spin')) || 0;
+const START_ANGLE = qs.has('angle') ? (parseFloat(qs.get('angle')) || 0) : 0;
+
+/* ===================== 全局参数（与原版一致） ===================== */
+const TREE_POINTS   = 50000;   // 70% 螺旋灯带 + 30% 填充
+const GROUND_POINTS = 4000;
+const STAR_POINTS   = 1200;
+const HEART_POINTS  = 1000;
+const SNOW2D_POINTS = 10;
+const TREE_HEIGHT   = 12.0;
+const TAU = Math.PI * 2;
+
+const rnd = (a = 0, b = 1) => a + Math.random() * (b - a);
+const rndInt = (a, b) => Math.floor(rnd(a, b + 1));
+function gauss(mu, sigma) {           // Box-Muller
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return mu + sigma * Math.sqrt(-2 * Math.log(u)) * Math.cos(TAU * v);
+}
+
+/* ===================== 生成几何 ===================== */
+// 每点 6 个 float：x, y, z, r, g, b(0~1)
+const geo = [];
+
+function pushPoint(x, y, z, c) {
+  geo.push(x, y, z, c[0] / 255, c[1] / 255, c[2] / 255);
+}
+
+function genTreePoints() {
+  const loops = 9;
+  const spiralN = Math.floor(TREE_POINTS * 0.7);
+
+  // 70% 螺旋灯带：高度分布偏向下半部分
+  for (let i = 0; i < spiralN; i++) {
+    const u = Math.random();
+    const h = Math.pow(u, 1.6);
+    const y = TREE_HEIGHT * h + 0.2;
+
+    let baseR = Math.pow(1 - h, 1.1) * 3.2;
+    const branchWave = Math.max(0, Math.sin((h * 5.8 + 0.15) * TAU));
+    baseR *= 1.0 + 0.65 * branchWave;
+
+    const t = u * loops * TAU;
+    const angle = t + rnd(-0.22, 0.22);
+    const r = baseR * rnd(0.85, 1.08);
+
+    const x = Math.cos(angle) * r;
+    const z = Math.sin(angle) * r;
+
+    let midBoost = 1.0 - Math.abs(h - 0.55) * 1.5;
+    midBoost = Math.max(0.15, midBoost);
+    let g = 155 + 90 * midBoost;
+    let b = 185 + 70 * midBoost;
+    g += rndInt(-15, 20);
+    b += rndInt(-15, 35);
+
+    let color = [255, Math.min(255, g), Math.min(255, b)];
+    if (Math.random() < 0.08) {                 // 更亮的小灯
+      color = [255, 255 - rndInt(0, 35), Math.min(255, 230 + rndInt(0, 25))];
+    }
+    pushPoint(x, y, z, color);
+  }
+
+  // 30% 随机填充，轮廓更“毛茸茸”
+  const fillN = TREE_POINTS - spiralN;
+  for (let i = 0; i < fillN; i++) {
+    const h = Math.pow(Math.random(), 1.9);
+    const y = TREE_HEIGHT * h + 0.2 + rnd(-0.08, 0.08);
+
+    let baseR = Math.pow(1 - h, 1.1) * 4.3;
+    const branchWave = Math.max(0, Math.sin((h * 5.8 + 0.15) * TAU));
+    baseR *= 1.0 + 0.65 * branchWave;
+
+    const r = baseR * Math.sqrt(Math.random());
+    const angle = Math.random() * TAU;
+
+    const x = Math.cos(angle) * r + rnd(-0.08, 0.08);
+    const z = Math.sin(angle) * r + rnd(-0.08, 0.08);
+
+    pushPoint(x, y, z, [255, rndInt(165, 225), rndInt(190, 250)]);
+  }
+}
+
+function genGroundPoints() {                    // 地面光环（法阵盘子）
+  const rings = [4.6, 6.0, 7.4, 8.8, 10.2, 11.4];
+  for (let i = 0; i < GROUND_POINTS; i++) {
+    const ring = rings[rndInt(0, rings.length - 1)];
+    const r = gauss(ring, 0.3);
+    const theta = Math.random() * TAU;
+    const x = Math.cos(theta) * r;
+    const z = Math.sin(theta) * r;
+    const c = Math.random() < 0.15 ? rndInt(235, 255) : rndInt(190, 235);
+    pushPoint(x, -0.25, z, [c, c, 255]);
+  }
+}
+
+function genStarPoints() {                      // 空中 3D 小亮点
+  for (let i = 0; i < STAR_POINTS; i++) {
+    const x = rnd(-18, 18);
+    const z = rnd(-18, 18);
+    const y = rnd(3, 18);
+    const base = rndInt(215, 255);
+    pushPoint(x, y, z, [base, base, 255]);
+  }
+}
+
+function genHeartPoints() {                     // 树顶 3D 爱心
+  const SCALE = 0.9;
+  const topY = TREE_HEIGHT + 0.05;
+  let made = 0;
+  while (made < HEART_POINTS) {
+    const x = rnd(-1.3, 1.3);
+    const y = rnd(-1.4, 1.4);
+    const f = Math.pow(x * x + y * y - 1.0, 3) - x * x * y * y * y;
+    if (f <= 0) {
+      const wx = x * SCALE * 0.8;
+      const wy = topY + (y + 1.0) * SCALE * 0.5;
+      const wz = rnd(-0.18, 0.18);
+
+      const dist = Math.hypot(x, y);
+      const factor = Math.max(0.35, 1.15 - 0.5 * dist);
+      const r = 255;
+      const g = Math.max(120, Math.min(255, Math.trunc(130 * factor + 80)));
+      const b = Math.max(120, Math.min(255, Math.trunc(190 * factor + 70)));
+      pushPoint(wx, wy, wz, [r, g, b]);
+      made++;
+    }
+  }
+}
+
+genTreePoints();
+genGroundPoints();
+genStarPoints();
+genHeartPoints();
+
+/* ===================== WebGL 渲染 ===================== */
+const glCanvas = document.getElementById('gl');
+const bloomCanvas = document.getElementById('bloom');
+const overlay = document.getElementById('overlay');
+const stage = document.getElementById('stage');
+
+const gl = glCanvas.getContext('webgl', {
+  alpha: false, antialias: true, premultipliedAlpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance'
+}) || glCanvas.getContext('experimental-webgl');
+
+if (!gl) {
+  document.getElementById('fallback').style.display = 'grid';
+  glCanvas.style.display = bloomCanvas.style.display = overlay.style.display = 'none';
+  throw new Error('WebGL unavailable');
+}
+
+const VS = `
+precision highp float;
+attribute vec3 aPos;
+attribute vec3 aColor;
+uniform float uAngle;
+uniform vec2 uRes;
+uniform float uScale;      // 参考画布像素 -> 设备像素
+varying vec3 vColor;
+
+void main() {
+  float ca = cos(uAngle), sa = sin(uAngle);
+  float xz = aPos.x * ca - aPos.z * sa;
+  float zz = aPos.x * sa + aPos.z * ca;
+
+  const float PITCH_ANGLE = -0.25;
+  float cp = cos(PITCH_ANGLE), sp = sin(PITCH_ANGLE);
+  float yp = aPos.y * cp - zz * sp;
+  float zp = aPos.y * sp + zz * cp + 13.0;   // CAM_DIST
+  yp -= 6.0;                                  // CAM_HEIGHT
+
+  if (zp <= 0.1) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    gl_PointSize = 0.0;
+    vColor = vec3(0.0);
+    return;
+  }
+
+  float f = (900.0 * 0.63) / zp * uScale;
+  float sx = uRes.x * 0.5 + xz * f;
+  float sy = uRes.y * 0.5 - yp * f;
+
+  gl_Position = vec4(2.0 * sx / uRes.x - 1.0, 1.0 - 2.0 * sy / uRes.y, 0.0, 1.0);
+
+  float base = 3.6 - zp * 0.13;
+  gl_PointSize = max(max(base, 1.6) * uScale * 2.0, 1.5);
+  vColor = aColor;
+}
+`;
+
+const FS = `
+precision highp float;
+varying vec3 vColor;
+uniform float uIntensity;
+
+void main() {
+  vec2 p = gl_PointCoord - vec2(0.5);
+  float r = length(p) * 2.0;
+  if (r > 1.0) discard;
+  float a = smoothstep(1.0, 0.5, r);
+  gl_FragColor = vec4(vColor * a * uIntensity, 1.0);
+}
+`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    throw new Error(gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+  throw new Error(gl.getProgramInfoLog(prog));
+}
+gl.useProgram(prog);
+
+const aPos = gl.getAttribLocation(prog, 'aPos');
+const aColor = gl.getAttribLocation(prog, 'aColor');
+const uAngle = gl.getUniformLocation(prog, 'uAngle');
+const uRes = gl.getUniformLocation(prog, 'uRes');
+const uIntensity = gl.getUniformLocation(prog, 'uIntensity');
+const uScaleLoc = gl.getUniformLocation(prog, 'uScale');
+
+// 一次性上传静态几何
+const data = new Float32Array(geo);
+const pointCount = data.length / 6;
+const bufPos = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bufPos);
+gl.bufferData(gl.ARRAY_BUFFER, data.filter((_, i) => i % 6 < 3), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+
+const colData = new Float32Array(pointCount * 3);
+for (let i = 0, j = 0; i < data.length; i += 6, j += 3) {
+  colData[j] = data[i + 3];
+  colData[j + 1] = data[i + 4];
+  colData[j + 2] = data[i + 5];
+}
+const bufCol = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bufCol);
+gl.bufferData(gl.ARRAY_BUFFER, colData, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(aColor);
+gl.vertexAttribPointer(aColor, 3, gl.FLOAT, false, 0, 0);
+
+gl.disable(gl.DEPTH_TEST);
+gl.clearColor(0, 0, 0, 1);
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.ONE, gl.ONE);
+// 优先用 MAX 混合：每个粒子按自身颜色取最大值，不会因密集叠加而过曝
+// （等价于原版“实心小圆点”的观感）；不支持时退回加色混合
+const extMax = gl.getExtension('EXT_blend_minmax');
+if (extMax) gl.blendEquation(extMax.MAX_EXT);
+
+/* ===================== 尺寸 / DPR ===================== */
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+let W = 0, H = 0;                 // CSS 像素尺寸
+let uiScale = 1;                  // 2D 前景尺寸基准（900px 高）
+let sceneScale = 1;               // 3D 场景缩放（相对 1600x900 参考画布）
+let portrait = false;
+
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  const bw = Math.floor(W * DPR);
+  const bh = Math.floor(H * DPR);
+
+  glCanvas.width = bw; glCanvas.height = bh;
+  gl.viewport(0, 0, bw, bh);
+
+  bloomCanvas.width = Math.max(1, Math.floor(bw / 4));
+  bloomCanvas.height = Math.max(1, Math.floor(bh / 4));
+
+  overlay.width = bw; overlay.height = bh;
+
+  // 3D 场景：按视口比例缩放，保证树完整可见（参考画布 1600x900，树宽约 660px）
+  portrait = H > W * 1.05;
+  sceneScale = Math.min(W * 0.92 / 660, H * 0.92 / 860);
+  uiScale = Math.min(Math.max(H / 900, 0.75), 2);
+
+  initSnow();
+}
+window.addEventListener('resize', resize);
+
+/* ===================== 2D 前景雪花 ===================== */
+const snowCtx = overlay.getContext('2d');
+let flakes = [];
+
+function resetFlake(f) {
+  f.x = rnd(0, W);
+  f.y = rnd(-80, -10) * uiScale;
+  f.r = rnd(10, 16);
+  f.v = rnd(30, 45);
+  const travel = H + 80 - f.y;
+  f.maxLife = travel / (f.v * uiScale);
+  f.life = f.maxLife;
+}
+
+function initSnow() {
+  flakes = [];
+  for (let i = 0; i < SNOW2D_POINTS; i++) {
+    const f = {};
+    resetFlake(f);
+    flakes.push(f);
+  }
+}
+
+function updateSnow(dt) {
+  for (const f of flakes) {
+    f.y += f.v * uiScale * dt;
+    f.life -= dt;
+    if (f.life <= 0 || f.y > H + 50 * uiScale) resetFlake(f);
+  }
+}
+
+function drawSnow() {
+  snowCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  snowCtx.clearRect(0, 0, W, H);
+
+  for (const f of flakes) {
+    if (f.maxLife <= 0) continue;
+    const phase = f.life / f.maxLife;
+    const alpha = phase > 0.3 ? 1 : Math.max(0, phase / 0.3);
+    const r = f.r * uiScale;
+
+    const g = snowCtx.createRadialGradient(f.x, f.y, 0, f.x, f.y, r);
+    g.addColorStop(0, `rgba(255,255,255,${alpha})`);
+    g.addColorStop(0.38, `rgba(255,255,255,${alpha * 0.34})`);
+    g.addColorStop(0.7, `rgba(255,255,255,${alpha * 0.12})`);
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    snowCtx.fillStyle = g;
+    snowCtx.beginPath();
+    snowCtx.arc(f.x, f.y, r, 0, TAU);
+    snowCtx.fill();
+  }
+}
+
+/* ===================== 文字 ===================== */
+const FONT_STACK = '"Great Vibes", "Monotype Corsiva", "Segoe Script", "Brush Script MT", cursive';
+const CN_FONT = '"Noto Serif SC", "Songti SC", "STSong", "SimSun", serif';
+
+function drawText() {
+  const titleSize = portrait
+    ? Math.min(Math.max(H * 0.042, 24), W * 0.082)
+    : Math.min(H * 0.05, W * 0.05);
+  const nameSize = Math.max(titleSize * 0.56, 16);
+  const subSize = Math.max(titleSize * 0.5, 14);
+  const x = Math.max(W * 0.028, 16);
+  const y = portrait ? Math.max(H * 0.145, titleSize * 1.2) : H / 3;
+
+  snowCtx.save();
+  snowCtx.textAlign = 'left';
+  snowCtx.textBaseline = 'alphabetic';
+  snowCtx.shadowColor = 'rgba(170,215,255,.85)';
+  snowCtx.shadowBlur = titleSize * 0.55;
+  snowCtx.fillStyle = '#ffffff';
+
+  // 英文主标题
+  snowCtx.font = `${titleSize}px ${FONT_STACK}`;
+  snowCtx.fillText(CONFIG.title, x, y);
+
+  // 中文祝福
+  let nextY = y;
+  if (CONFIG.name) {
+    nextY = y + titleSize * 0.8;
+    snowCtx.letterSpacing = '0.06em';
+    snowCtx.font = `600 ${nameSize}px ${CN_FONT}`;
+    snowCtx.fillText(CONFIG.name, x, nextY);
+    snowCtx.letterSpacing = '0em';
+  }
+
+  // 年份
+  if (CONFIG.subtitle) {
+    snowCtx.font = `${subSize}px ${FONT_STACK}`;
+    snowCtx.fillText(CONFIG.subtitle, x, nextY + nameSize * 1.55);
+  }
+  snowCtx.restore();
+}
+
+/* ===================== 主循环 ===================== */
+const bctx = bloomCanvas.getContext('2d');
+let angle = START_ANGLE;
+let frameIdx = 0;
+let last = performance.now();
+
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  angle += CONFIG.spin * dt;
+
+  // 1) WebGL 粒子
+  gl.uniform1f(uAngle, angle);
+  gl.uniform2f(uRes, glCanvas.width, glCanvas.height);
+  gl.uniform1f(uIntensity, CONFIG.intensity);
+  gl.uniform1f(uScaleLoc, sceneScale * DPR);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.drawArrays(gl.POINTS, 0, pointCount);
+
+  // 2) 泛光（低分辨率拷贝，靠 CSS 模糊 + screen 叠加；半帧率更新更省）
+  if (frameIdx % 2 === 0) {
+    bctx.clearRect(0, 0, bloomCanvas.width, bloomCanvas.height);
+    bctx.drawImage(glCanvas, 0, 0, bloomCanvas.width, bloomCanvas.height);
+  }
+  frameIdx++;
+
+  // 3) 前景雪花 + 文字
+  updateSnow(dt);
+  drawSnow();
+  drawText();
+
+  requestAnimationFrame(frame);
+}
+
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
